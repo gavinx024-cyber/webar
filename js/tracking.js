@@ -13,6 +13,7 @@ export class CardTracker {
     this.epoch = 0;
     this.found = new Set();
     this.post = [];
+    this.configuredFilters = new WeakSet();
     this.onResize = () => this.resize();
   }
 
@@ -83,7 +84,8 @@ export class CardTracker {
     const { dimensions, trackingDataList } =
       this.controller.addImageTargetsFromBuffer(
         await response.arrayBuffer(),
-    );
+      );
+
     this.repairTrackingFrames(dimensions, trackingDataList);
 
     const T = AFRAME.THREE;
@@ -108,46 +110,51 @@ export class CardTracker {
   }
 
   repairTrackingFrames(dimensions, trackingDataList) {
-  let changed = false;
+    // 默认追踪层不足4个点时，改用已有的可用层。
+    let changed = false;
 
-  const frames = trackingDataList.map((list, index) => {
-    if (list[1]?.points.length >= 4) return list;
+    const frames = trackingDataList.map((list, index) => {
+      if (list[1]?.points.length >= 4) return list;
 
-    const fallback = list.find(
-      (frame) => frame.points.length >= 4,
-    );
-    if (!fallback) {
-      throw new Error(
-        `カード${index + 1}の追跡点が不足しています。`,
+      const fallback = list.find(
+        (frame) => frame.points.length >= 4,
       );
+
+      if (!fallback) {
+        throw new Error(
+          `カード${index + 1}の追跡点が不足しています。識別データを再作成してください。`,
+        );
+      }
+
+      changed = true;
+      const copy = [...list];
+      copy[1] = fallback;
+      return copy;
+    });
+
+    if (!changed) return;
+
+    const previous = this.controller.tracker;
+
+    // 所有卡片共用张量尺寸，因此一起重建。
+    this.controller.tracker = new previous.constructor(
+      dimensions,
+      frames,
+      this.controller.projectionTransform,
+      this.controller.inputWidth,
+      this.controller.inputHeight,
+      this.controller.debugMode,
+    );
+
+    for (const key of [
+      "featurePointsListT",
+      "imagePixelsListT",
+      "imagePropertiesListT",
+    ]) {
+      previous[key].forEach((tensor) => tensor.dispose());
     }
-
-    changed = true;
-    const copy = [...list];
-    copy[1] = fallback;
-    return copy;
-  });
-
-  if (!changed) return;
-
-  const previous = this.controller.tracker;
-  this.controller.tracker = new previous.constructor(
-    dimensions,
-    frames,
-    this.controller.projectionTransform,
-    this.controller.inputWidth,
-    this.controller.inputHeight,
-    this.controller.debugMode,
-  );
-
-  for (const key of [
-    "featurePointsListT",
-    "imagePixelsListT",
-    "imagePropertiesListT",
-  ]) {
-    previous[key].forEach((tensor) => tensor.dispose());
   }
-}
+
   setTarget(index) {
     if (index === this.expected) return;
 
@@ -155,8 +162,6 @@ export class CardTracker {
 
     if (this.controller) {
       this.controller.interestedTargetIndex = index;
-
-      // 在当前识别帧处理完成后，释放上一张卡的追踪名额。
       this.pendingTarget = index;
     }
 
@@ -182,20 +187,39 @@ export class CardTracker {
     }
   }
 
+  stabilizeAutumnTracking() {
+    if (this.mode !== "phone") return;
+
+    // 第4张卡：秋天，索引为3。
+    const filter = this.controller?.trackingStates?.[3]?.filter;
+
+    if (!filter || this.configuredFilters.has(filter)) return;
+
+    // MindAR 1.2.5的时间单位为毫秒。
+    // 降低秋卡滤波器对细小姿态波动的敏感程度。
+    filter.minCutOff = 0.001;
+    filter.beta = 0.002;
+    filter.reset();
+
+    this.configuredFilters.add(filter);
+  }
+
   update({ type, targetIndex, worldMatrix }) {
     if (type === "processDone") {
+      this.stabilizeAutumnTracking();
       this.flushTargetChange();
       return;
     }
 
     if (type !== "updateMatrix") return;
 
-    // 切换地点时，忽略上一张卡晚到的识别结果。
+    // 忽略上一张卡晚到的识别结果。
     if (targetIndex !== this.expected) return;
 
     if (worldMatrix) {
       if (this.mode === "phone") {
         this.root.matrixAutoUpdate = false;
+
         this.root.matrix
           .fromArray(worldMatrix)
           .multiply(this.post[targetIndex]);
@@ -253,6 +277,7 @@ export class CardTracker {
     this.controller = null;
     this.pendingTarget = undefined;
     this.expected = undefined;
+    this.configuredFilters = new WeakSet();
 
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
