@@ -47,7 +47,40 @@ export class Game {
     this.phase = "tutorial";
     this.index = 0;
     this.fragments = new Set();
+    this.history = [];
+    this.cursor = -1;
+    this.record();
     this.emit();
+  }
+  get replaying() {
+    return this.cursor < this.history.length - 1;
+  }
+  get canGoBack() {
+    return this.cursor > 0;
+  }
+  get storyFragmentCount() {
+    return this.history[this.cursor]?.fragmentCount ?? this.fragments.size;
+  }
+  record() {
+    this.history.push({
+      phase: this.phase,
+      index: this.index,
+      fragmentCount: this.fragments.size,
+    });
+    this.cursor = this.history.length - 1;
+  }
+  restore(index) {
+    this.cursor = index;
+    this.phase = this.history[index].phase;
+    this.index = this.history[index].index;
+    this.emit();
+  }
+  back() {
+    if (!this.canGoBack) return false;
+    let index = this.cursor - 1;
+    while (index > 0 && this.history[index].phase === "scan") index--;
+    this.restore(index);
+    return true;
   }
   get spot() {
     return SPOTS[this.index];
@@ -55,7 +88,10 @@ export class Game {
   get form() {
     return ["tutorial", "opening-live", "opening-frozen", "ended"].includes(
       this.phase,
-    )
+    ) ||
+      (this.phase === "scan" &&
+        this.index === 0 &&
+        this.storyFragmentCount === 0)
       ? "original"
       : "suit";
   }
@@ -63,17 +99,29 @@ export class Game {
     this.onChange(this);
   }
   recognize(id) {
-    if (this.phase !== "scan" || id !== this.spot.id) return false;
+    if (this.replaying || this.phase !== "scan" || id !== this.spot.id)
+      return false;
     this.phase =
       this.index === 0
         ? this.fragments.size === 4
           ? "finale"
           : "opening-live"
         : "event";
+    this.record();
     this.emit();
     return true;
   }
   advance() {
+    if (this.replaying) {
+      let index = this.cursor + 1;
+      while (
+        index < this.history.length - 1 &&
+        this.history[index].phase === "scan"
+      )
+        index++;
+      this.restore(index);
+      return;
+    }
     switch (this.phase) {
       case "tutorial":
         this.phase = "scan";
@@ -108,18 +156,23 @@ export class Game {
       default:
         return;
     }
+    this.record();
     this.emit();
   }
   debugJump(id) {
     this.index = SPOTS.findIndex((s) => s.id === id);
     if (this.index < 0) this.index = 0;
     this.phase = "scan";
+    this.history = [];
+    this.record();
     this.emit();
   }
   debugFinal() {
     this.fragments = new Set(SPOTS.slice(1).map((s) => s.id));
     this.index = 0;
     this.phase = "scan";
+    this.history = [];
+    this.record();
     this.emit();
   }
 }
@@ -167,8 +220,8 @@ export function dialogue(g) {
   if (p === "reward")
     return {
       title: "時間のかけらを見つけた！",
-      text: `これで${g.fragments.size}つ。${g.fragments.size === 4 ? "4つ揃った！日時計へ戻ろう。" : "次の季節へ進もう。"}`,
-      button: g.fragments.size === 4 ? "日時計へ戻る" : "次の季節へ",
+      text: `これで${g.storyFragmentCount}つ。${g.storyFragmentCount === 4 ? "4つ揃った！日時計へ戻ろう。" : "次の季節へ進もう。"}`,
+      button: g.storyFragmentCount === 4 ? "日時計へ戻る" : "次の季節へ",
     };
   if (p === "finale")
     return {
@@ -177,8 +230,8 @@ export function dialogue(g) {
       button: "時間を取り戻す",
     };
   return {
-    title: "失われた時間が、戻った。",
-    text: "ありがとう。きみと一緒に、この公園の時間を取り戻せたよ。",
+    title: "おめでとうございます！",
+    text: "4つのかけらを集め、公園の時間を取り戻しました。ありがとう！これで時間旅行はおしまい。前の場面も、もう一度楽しめるよ。",
     button: "もう一度遊ぶ",
   };
 }
