@@ -80,9 +80,11 @@ export class CardTracker {
       throw new Error("カードの識別データが見つかりません。");
     }
 
-    const { dimensions } = this.controller.addImageTargetsFromBuffer(
-      await response.arrayBuffer(),
+    const { dimensions, trackingDataList } =
+      this.controller.addImageTargetsFromBuffer(
+        await response.arrayBuffer(),
     );
+    this.repairTrackingFrames(dimensions, trackingDataList);
 
     const T = AFRAME.THREE;
 
@@ -105,6 +107,47 @@ export class CardTracker {
     this.onStatus("カードの全体をカメラに映してください");
   }
 
+  repairTrackingFrames(dimensions, trackingDataList) {
+  let changed = false;
+
+  const frames = trackingDataList.map((list, index) => {
+    if (list[1]?.points.length >= 4) return list;
+
+    const fallback = list.find(
+      (frame) => frame.points.length >= 4,
+    );
+    if (!fallback) {
+      throw new Error(
+        `カード${index + 1}の追跡点が不足しています。`,
+      );
+    }
+
+    changed = true;
+    const copy = [...list];
+    copy[1] = fallback;
+    return copy;
+  });
+
+  if (!changed) return;
+
+  const previous = this.controller.tracker;
+  this.controller.tracker = new previous.constructor(
+    dimensions,
+    frames,
+    this.controller.projectionTransform,
+    this.controller.inputWidth,
+    this.controller.inputHeight,
+    this.controller.debugMode,
+  );
+
+  for (const key of [
+    "featurePointsListT",
+    "imagePixelsListT",
+    "imagePropertiesListT",
+  ]) {
+    previous[key].forEach((tensor) => tensor.dispose());
+  }
+}
   setTarget(index) {
     if (index === this.expected) return;
 
