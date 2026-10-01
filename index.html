@@ -35,16 +35,25 @@
       <div class="eyebrow">靱公園 · 四季の旅</div>
       <h1>失われた<br /><em>時間</em>を探せ！</h1>
       <p>時間旅行者・小Hと一緒に、<br />止まった公園の時間を取り戻そう。</p>
-      <div class="mode-title">体験する方法を選んでください</div>
-      <button id="phone">
-        スマートフォンでARを始める<small>5枚のカードを使う・座って体験</small>
-      </button>
-      <button id="quest" class="secondary">
-        Quest 3でARを始める<small>透視AR・コントローラーで選択</small>
-      </button>
-      <button id="preview" class="text-button">カメラなしでプレビュー</button>
-      <div class="upcoming">
-        公園を歩くモードは、次の開発段階で追加予定です。
+      <div id="mode-select">
+        <div class="mode-title">遊び方を選んでください</div>
+        <button id="seated">
+          座って巡る<small>5枚のカードで、同じ場所から五つの地点へ</small>
+        </button>
+        <button id="roaming" class="secondary" disabled>
+          公園を歩いて巡る<small>準備中 · GPS案内と実景認識を追加予定</small>
+        </button>
+      </div>
+      <div id="device-select" hidden>
+        <div class="mode-title">座って巡る · 使う機器を選んでください</div>
+        <button id="phone">
+          スマートフォン<small>カメラでカードを読み取る</small>
+        </button>
+        <button id="quest" class="secondary">
+          ARヘッドセット · Quest 3<small>透視AR・コントローラーで選択</small>
+        </button>
+        <button id="preview" class="text-button">カメラなしでプレビュー</button>
+        <button id="choose-mode" class="text-button">遊び方の選択に戻る</button>
       </div>
       <a href="print.html" class="print-link" target="_blank" rel="noopener"
         >5枚のカードを印刷</a
@@ -57,7 +66,10 @@
       </div>
       <h2 id="dialogue-title"></h2>
       <p id="message" aria-live="polite"></p>
-      <button id="action"></button>
+      <div class="dialogue-actions">
+        <button id="back" class="secondary" hidden>ひとつ前へ</button>
+        <button id="action"></button>
+      </div>
     </section>
     <aside id="error" class="error" hidden role="alert">
       <p id="error-text"></p>
