@@ -211,6 +211,16 @@ function activate() {
     scene.exitVR();
     return;
   }
+  if (!game.replaying && game.phase === "ended") {
+    tracker?.stop();
+    const home = () => {
+      location.href = DEBUG_MODE ? "./?debug=1" : "./";
+    };
+    if (scene?.is("ar-mode")) {
+      Promise.resolve(scene.exitVR()).then(home, home);
+    } else home();
+    return;
+  }
   if (game.replaying) {
     game.advance();
   } else if (game.phase === "scan") {
