@@ -3,6 +3,7 @@ import "./stage.js";
 import { CardTracker } from "./tracking.js";
 const $ = (id) => document.getElementById(id);
 const DEBUG_MODE = new URLSearchParams(location.search).get("debug") === "1";
+let experienceMode = "seated";
 let scene,
   stageEl,
   stage,
@@ -20,31 +21,74 @@ function status(text) {
 function render() {
   const d = dialogue(game);
   $("count").textContent = `時間のかけら ${game.fragments.size} / 4`;
-  $("spot-label").textContent = `${game.spot.season} · ${game.spot.name}`;
+  $("spot-label").textContent =
+    `${game.replaying ? "もう一度 · " : ""}${game.spot.season} · ${game.spot.name}`;
   $("dialogue-title").textContent = d.title;
   $("message").textContent = d.text;
-  $("action").hidden = !d.button && mode !== "demo";
+  $("back").hidden = !game.canGoBack;
+  $("action").hidden = !game.replaying && !d.button && mode !== "demo";
   $("action").textContent =
-    d.button ||
+    (game.replaying ? "続きへ" : d.button) ||
     (mode === "demo" ? `${game.spot.name}の認識をシミュレート` : "");
   stage?.setGame(game);
-  if (game.phase === "scan") {
-    tracker?.setTarget(game.index);
+  if (!game.replaying) tracker?.setTarget(game.index);
+  if (game.replaying) {
+    status("前の場面をもう一度楽しめます。集めたかけらはそのままです");
+  } else if (game.phase === "ended") {
+    status("おめでとうございます！時間旅行はおしまいです");
+  } else if (game.phase === "scan") {
     if (mode === "phone" && stageEl) stageEl.object3D.visible = false;
     if (mode === "demo")
       status("プレビュー：カード認識をシミュレートしています");
     else if (trackerReady) status(`${game.spot.name}のカードを映してください`);
   }
+  syncPhonePresentation();
   $("debug-info").textContent = JSON.stringify({
     mode,
+    experienceMode,
+    replaying: game.replaying,
     phase: game.phase,
     spot: game.spot.id,
     fragments: [...game.fragments],
     camera: !!tracker?.stream,
+    expectedTarget: tracker?.expected,
+    activeTracks: tracker?.controller?.trackingStates
+      .map((state, index) => (state.isTracking ? index : null))
+      .filter((index) => index !== null),
     xr: scene?.is("ar-mode") || false,
   });
 }
 game.onChange = render;
+function selectExperience() {
+  experienceMode = "seated";
+  $("mode-select").hidden = true;
+  $("device-select").hidden = false;
+}
+$("seated").onclick = selectExperience;
+$("choose-mode").onclick = () => {
+  $("device-select").hidden = true;
+  $("mode-select").hidden = false;
+};
+function syncPhonePresentation() {
+  if (mode !== "phone" || !stageEl || !scene?.camera) return;
+  const fixed = game.replaying || ["tutorial", "ended"].includes(game.phase);
+  if (!fixed) {
+    stageEl.object3D.matrixAutoUpdate = false;
+    return;
+  }
+  // Replay is displayed in front of the screen; no old card is required.
+  const camera = scene.camera;
+  const available =
+    2 * Math.tan((camera.fov * Math.PI) / 360) * 1200 * camera.aspect;
+  const root = stageEl.object3D;
+  root.matrixAutoUpdate = true;
+  root.position.set(0, 0.13 * 600, -1200);
+  root.rotation.set(0, 0, 0);
+  root.scale.setScalar(Math.min(650, (available * 0.9) / 1.5));
+  root.updateMatrix();
+  root.matrixWorldNeedsUpdate = true;
+  root.visible = true;
+}
 async function createScene(kind) {
   mode = kind;
   $("welcome").hidden = true;
@@ -101,6 +145,7 @@ function fitPreview() {
   stageEl.object3D.position.set(0, 0.13, -2);
 }
 window.addEventListener("resize", fitPreview);
+window.addEventListener("resize", syncPhonePresentation);
 async function startCamera() {
   trackerReady = false;
   stage.notice = null;
@@ -113,10 +158,17 @@ async function startCamera() {
     onFound: (index) => {
       const id = SPOTS[index]?.id;
       if (game.recognize(id)) status(`${game.spot.name}を認識しました`);
+      syncPhonePresentation();
     },
     onLost: (index) => {
-      if (index === game.index && game.phase !== "scan")
+      if (
+        !game.replaying &&
+        index === game.index &&
+        game.phase !== "scan" &&
+        !["tutorial", "ended"].includes(game.phase)
+      )
         status("カードをもう一度映すと、AR表示が戻ります");
+      syncPhonePresentation();
     },
     onStatus: status,
   });
@@ -159,11 +211,15 @@ function activate() {
     scene.exitVR();
     return;
   }
-  if (game.phase === "scan") {
+  if (game.replaying) {
+    game.advance();
+  } else if (game.phase === "scan") {
     if (mode === "demo") game.recognize(game.spot.id);
   } else game.advance();
 }
 window.addEventListener("game-action", activate);
+window.addEventListener("game-back", () => game.back());
+$("back").addEventListener("click", () => game.back());
 $("action").addEventListener("click", activate);
 $("phone").onclick = async () => {
   if (busy) return;
@@ -281,5 +337,7 @@ initial.addEventListener("loaded", () => {
     .querySelector("[time-stage]")
     .components["time-stage"].stage.setGame(game);
 });
-if (new URLSearchParams(location.search).get("preview") === "1")
+if (new URLSearchParams(location.search).get("preview") === "1") {
+  selectExperience();
   $("preview").click();
+}
