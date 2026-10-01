@@ -1,5 +1,3 @@
-// Phone: marker pose. Quest: card identity only; XR supplies the stage's spatial pose.
-// The Quest camera stream is not assumed to be the compositor's passthrough image.
 export class CardTracker {
   constructor({ video, scene, root, mode, onFound, onLost, onStatus }) {
     Object.assign(this, {
@@ -11,18 +9,25 @@ export class CardTracker {
       onLost,
       onStatus,
     });
+
     this.epoch = 0;
     this.found = new Set();
     this.post = [];
     this.onResize = () => this.resize();
   }
+
   async start() {
-    if (!isSecureContext)
+    if (!isSecureContext) {
       throw new Error("カメラを使うにはHTTPSのURLで開いてください。");
-    if (!navigator.mediaDevices?.getUserMedia)
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("このブラウザーではカメラを利用できません。");
+    }
+
     const epoch = ++this.epoch;
     this.onStatus("カメラの許可を確認しています…");
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
       video: {
@@ -33,26 +38,33 @@ export class CardTracker {
         frameRate: { ideal: 24, max: 30 },
       },
     });
+
     if (epoch !== this.epoch) {
-      stream.getTracks().forEach((t) => t.stop());
+      stream.getTracks().forEach((track) => track.stop());
       return;
     }
+
     this.stream = stream;
     this.video.srcObject = stream;
+
     await new Promise((resolve, reject) => {
       if (this.video.readyState >= 1) return resolve();
+
       this.video.onloadedmetadata = resolve;
       this.video.onerror = () =>
         reject(new Error("カメラ映像を読み込めませんでした。"));
     });
-    // MindAR's InputLoader reads the element's width/height attributes,
-    // not just videoWidth/videoHeight. Without these the frame is drawn at 0×0.
+
     this.video.width = this.video.videoWidth;
     this.video.height = this.video.videoHeight;
     await this.video.play();
+
     this.onStatus("5枚のカードを読み込んでいます…");
+
     const { Controller } = await import("../vendor/mindar-image.prod.js");
+
     if (epoch !== this.epoch) return;
+
     this.controller = new Controller({
       inputWidth: this.video.videoWidth,
       inputHeight: this.video.videoHeight,
@@ -61,79 +73,148 @@ export class CardTracker {
       missTolerance: 8,
       onUpdate: (data) => this.update(data),
     });
+
     const response = await fetch("assets/cards/targets.mind");
-    if (!response.ok) throw new Error("カードの識別データが見つかりません。");
+
+    if (!response.ok) {
+      throw new Error("カードの識別データが見つかりません。");
+    }
+
     const { dimensions } = this.controller.addImageTargetsFromBuffer(
       await response.arrayBuffer(),
     );
+
     const T = AFRAME.THREE;
-    this.post = dimensions.map(([w, h]) =>
+
+    this.post = dimensions.map(([width, height]) =>
       new T.Matrix4().compose(
-        new T.Vector3(w / 2, h / 2, 0),
+        new T.Vector3(width / 2, height / 2, 0),
         new T.Quaternion(),
-        new T.Vector3(w, w, w),
+        new T.Vector3(width, width, width),
       ),
     );
+
     if (this.mode === "phone") {
       document.body.classList.add("camera-on");
       this.resize();
       window.addEventListener("resize", this.onResize);
     }
+
     this.controller.dummyRun(this.video);
     this.controller.processVideo(this.video);
     this.onStatus("カードの全体をカメラに映してください");
   }
+
   setTarget(index) {
+    if (index === this.expected) return;
+
     this.expected = index;
-    if (this.controller) this.controller.interestedTargetIndex = index;
+
+    if (this.controller) {
+      this.controller.interestedTargetIndex = index;
+
+      // 在当前识别帧处理完成后，释放上一张卡的追踪名额。
+      this.pendingTarget = index;
+    }
+
+    this.found.clear();
   }
+
+  flushTargetChange() {
+    if (this.pendingTarget === undefined || !this.controller) return;
+
+    const index = this.pendingTarget;
+    this.pendingTarget = undefined;
+
+    for (const [i, state] of this.controller.trackingStates.entries()) {
+      if (i === index) continue;
+
+      state.isTracking = false;
+      state.showing = false;
+      state.trackCount = 0;
+      state.trackMiss = 0;
+      state.currentModelViewTransform = null;
+      state.trackingMatrix = null;
+      state.filter.reset();
+    }
+  }
+
   update({ type, targetIndex, worldMatrix }) {
+    if (type === "processDone") {
+      this.flushTargetChange();
+      return;
+    }
+
     if (type !== "updateMatrix") return;
+
+    // 切换地点时，忽略上一张卡晚到的识别结果。
+    if (targetIndex !== this.expected) return;
+
     if (worldMatrix) {
-      if (this.mode === "phone" && targetIndex === this.expected) {
-        const T = AFRAME.THREE;
+      if (this.mode === "phone") {
         this.root.matrixAutoUpdate = false;
         this.root.matrix
           .fromArray(worldMatrix)
           .multiply(this.post[targetIndex]);
+
         this.root.matrixWorldNeedsUpdate = true;
         this.root.visible = true;
       }
-      // Repeated frames are harmless: Game.recognize guards both phase and expected ID.
+
       this.found.add(targetIndex);
       this.onFound(targetIndex);
     } else {
       this.found.delete(targetIndex);
-      if (this.mode === "phone" && targetIndex === this.expected)
+
+      if (this.mode === "phone") {
         this.root.visible = false;
+      }
+
       this.onLost(targetIndex);
     }
   }
+
   resize() {
     if (!this.controller || this.mode !== "phone") return;
+
     const camera = this.scene.camera;
     if (!camera) return;
-    const w = innerWidth,
-      h = innerHeight,
-      ratio = this.video.videoWidth / this.video.videoHeight;
-    const vh = ratio > w / h ? h : w / ratio;
-    const proj = this.controller.getProjectionMatrix();
-    camera.fov = (2 * Math.atan((1 / proj[5] / vh) * h) * 180) / Math.PI;
-    camera.near = proj[14] / (proj[10] - 1);
-    camera.far = proj[14] / (proj[10] + 1);
-    camera.aspect = w / h;
+
+    const width = innerWidth;
+    const height = innerHeight;
+    const ratio = this.video.videoWidth / this.video.videoHeight;
+    const videoHeight =
+      ratio > width / height ? height : width / ratio;
+
+    const projection = this.controller.getProjectionMatrix();
+
+    camera.fov =
+      (2 * Math.atan((1 / projection[5] / videoHeight) * height) * 180) /
+      Math.PI;
+
+    camera.near = projection[14] / (projection[10] - 1);
+    camera.far = projection[14] / (projection[10] + 1);
+    camera.aspect = width / height;
     camera.updateProjectionMatrix();
   }
+
   stop() {
     this.epoch++;
+
     window.removeEventListener("resize", this.onResize);
+
     this.controller?.stopProcessVideo();
     this.controller?.dispose();
     this.controller?.worker?.terminate();
+
     this.controller = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
+    this.pendingTarget = undefined;
+    this.expected = undefined;
+
+    this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
     this.video.srcObject = null;
+
     document.body.classList.remove("camera-on");
     this.found.clear();
   }
