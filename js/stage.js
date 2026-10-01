@@ -45,6 +45,36 @@ export class Stage {
     this.effects = new T.Group();
     this.effects.position.set(-0.18, 0.04, 0.02);
     this.root.add(this.effects);
+    // Three bursts, 96 points and one draw call; no firework textures.
+    this.fireworkPositions = new Float32Array(96 * 3);
+    const fireworkColors = new Float32Array(96 * 3);
+    for (let i = 0; i < 96; i++) {
+      const color = new T.Color(SPOTS[1 + Math.floor(i / 24)].color);
+      color.toArray(fireworkColors, i * 3);
+    }
+    const fireworkGeometry = new T.BufferGeometry();
+    fireworkGeometry.setAttribute(
+      "position",
+      new T.BufferAttribute(this.fireworkPositions, 3),
+    );
+    fireworkGeometry.setAttribute(
+      "color",
+      new T.BufferAttribute(fireworkColors, 3),
+    );
+    this.fireworks = new T.Points(
+      fireworkGeometry,
+      new T.PointsMaterial({
+        size: 0.018,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.85,
+        blending: T.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    this.fireworks.frustumCulled = false;
+    this.fireworks.visible = false;
+    this.root.add(this.fireworks);
     const accent = new T.MeshBasicMaterial({
       color: 0x74e4cd,
       transparent: true,
@@ -135,9 +165,27 @@ export class Stage {
     );
     el.append(this.hit);
     this.hit.addEventListener("click", () => {
-      if (this.game && (this.notice || this.game.phase !== "scan")) onAction();
+      if (
+        this.game &&
+        (this.notice || this.game.replaying || this.game.phase !== "scan")
+      )
+        onAction();
     });
     this.hit.setAttribute("visible", false);
+    this.backHit = document.createElement("a-plane");
+    this.backHit.setAttribute("width", ".325");
+    this.backHit.setAttribute("height", ".1");
+    this.backHit.setAttribute("position", "-0.425 -0.76 0.18");
+    this.backHit.setAttribute(
+      "material",
+      "opacity: 0; transparent: true; depthWrite: false",
+    );
+    this.backHit.setAttribute("visible", false);
+    this.backHit.addEventListener("click", () => {
+      if (!this.notice && this.game?.canGoBack)
+        window.dispatchEvent(new Event("game-back"));
+    });
+    el.append(this.backHit);
     this.phaseTime = 0;
     this.lastTime = 0;
     this.manualForm = null;
@@ -156,7 +204,7 @@ export class Stage {
     this.card.material.needsUpdate = true;
     this.h.setForm(g.form);
     this.h.setMotion(
-      g.phase === "reward"
+      ["reward", "ended"].includes(g.phase)
         ? "celebrate"
         : g.phase === "tutorial"
           ? "wave"
@@ -191,27 +239,47 @@ export class Stage {
     c.fillStyle = "#d3e6e8";
     c.font = "30px UtsuboJP, sans-serif";
     textLines(c, d.text, 42, 169, 938, 45);
-    c.fillStyle = d.button ? "#74e4cd" : "#254954";
-    rounded(c, 42, 358, 940, 84, 18);
-    c.fillStyle = d.button ? "#142d3c" : "#c4dedf";
+    const back = !this.notice && g.canGoBack;
+    const button = !this.notice && g.replaying ? "続きへ" : d.button;
+    if (back) {
+      c.fillStyle = "#284958";
+      rounded(c, 42, 358, 260, 84, 18);
+      c.fillStyle = "#eff8f7";
+      c.font = "bold 29px UtsuboJP, sans-serif";
+      c.textAlign = "center";
+      c.fillText("ひとつ前へ", 172, 411);
+    }
+    c.fillStyle = button ? "#74e4cd" : "#254954";
+    rounded(c, back ? 322 : 42, 358, back ? 660 : 940, 84, 18);
+    c.fillStyle = button ? "#142d3c" : "#c4dedf";
     c.font = "bold 29px UtsuboJP, sans-serif";
     c.textAlign = "center";
     c.fillText(
-      d.button || this.scanStatus || "カードを映してください",
-      512,
+      button || this.scanStatus || "カードを映してください",
+      back ? 652 : 512,
       411,
     );
     c.textAlign = "left";
     this.panelTexture.needsUpdate = true;
+    this.hit.setAttribute("width", back ? ".825" : "1.12");
+    this.hit.setAttribute("position", `${back ? 0.175 : 0} -0.76 0.18`);
+    const forwardEnabled = !!this.xrEnabled && !!button;
+    this.hit.setAttribute("visible", forwardEnabled);
+    this.hit.classList.toggle("clickable", forwardEnabled);
+    const backEnabled = !!this.xrEnabled && back;
+    this.backHit.setAttribute("visible", backEnabled);
+    this.backHit.classList.toggle("clickable", backEnabled);
   }
   setStatus(s) {
     this.scanStatus = s;
     this.drawPanel();
   }
   setXR(enabled) {
+    this.xrEnabled = enabled;
     this.panel.visible = enabled;
     this.hit.setAttribute("visible", enabled);
     this.needsXRPlacement = enabled;
+    this.drawPanel();
   }
   update(time) {
     // Place from an actual XR animation frame; window RAF can pause in immersive sessions.
@@ -235,6 +303,7 @@ export class Stage {
       s = g.spot,
       dt = (time - this.phaseTime) / 1000,
       t = reduced ? 0 : time / 1000;
+    this.updateFireworks(p, dt);
     this.h.update(time, reduced);
     this.h.setForm(this.manualForm || g.form);
     this.h.root.scale.setScalar(
@@ -313,6 +382,32 @@ export class Stage {
         );
       }
     });
+  }
+  updateFireworks(phase, dt) {
+    this.fireworks.visible = phase === "ended" && (reduced || dt < 9);
+    if (!this.fireworks.visible) return;
+    for (let i = 0; i < 96; i++) {
+      const group = Math.floor(i / 32);
+      const age = reduced ? 0.7 : (dt - group * 0.6) % 3;
+      const offset = i * 3;
+      if (age < 0 || age > 1.8) {
+        this.fireworkPositions[offset] = 10000;
+        this.fireworkPositions[offset + 1] = 10000;
+        this.fireworkPositions[offset + 2] = 0;
+        continue;
+      }
+      const angle = ((i % 32) * Math.PI * 2) / 32;
+      const radius = (1 - Math.exp(-age * 3)) * (0.19 + (i % 3) * 0.025);
+      this.fireworkPositions[offset] =
+        (group - 1) * 0.34 + Math.cos(angle) * radius;
+      this.fireworkPositions[offset + 1] =
+        0.36 +
+        (group % 2) * 0.12 +
+        Math.sin(angle) * radius -
+        (reduced ? 0 : age * age * 0.035);
+      this.fireworkPositions[offset + 2] = 0.12;
+    }
+    this.fireworks.geometry.attributes.position.needsUpdate = true;
   }
 }
 AFRAME.registerComponent("time-stage", {
